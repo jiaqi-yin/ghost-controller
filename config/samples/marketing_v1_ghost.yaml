@@ -1,0 +1,21 @@
+apiVersion: marketing.kb.dev/v1
+kind: Ghost
+metadata:
+  labels:
+    app.kubernetes.io/name: ghost-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: ghost-sample1
+  namespace: marketing
+spec:
+  imageTag: alpine
+---
+apiVersion: marketing.kb.dev/v1
+kind: Ghost
+metadata:
+  labels:
+    app.kubernetes.io/name: ghost-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: ghost-sample2
+  namespace: sales
+spec:
+  imageTag: latest
