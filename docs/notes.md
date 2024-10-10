@@ -38,7 +38,7 @@ make docker-build docker-push deploy
 ## Create two sample ghost applications in different namespaces
 ```
 kubectl create namespace marketing
-kubectl create namespace marketing
+kubectl create namespace sales
 kubectl apply -f config/samples/marketing_v1_ghost.yaml
 ```
 
