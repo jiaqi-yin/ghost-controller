@@ -13,6 +13,27 @@ kubebuilder create api \
   --controller true
 ```
 
+## Scaffold a webhook for an API resource
+```
+kubebuilder create webhook \
+  --kind Ghost \
+  --group marketing \
+  --version v1 \
+  --defaulting \
+  --programmatic-validation \
+  --conversion
+```
+
+## Install cert-manager
+```
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.1/cert-manager.yaml
+```
+
+## Install prometheus-operator
+```
+kubectl create -f config/prometheus-operator/bundle.yaml
+```
+
 ## Install CRDs into the K8s cluster
 ```
 make install
@@ -31,7 +52,7 @@ kubectl get crd ghosts.marketing.kb.dev --output jsonpath="{.spec.versions[0].sc
 
 ## Deploy
 ```
-export IMG=jiaqiyin/ghost-controller:latest
+export IMG=jiaqiyin/ghost-controller-webhook:latest
 make docker-build docker-push deploy
 ```
 
