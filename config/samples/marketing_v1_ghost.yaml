@@ -7,7 +7,9 @@ metadata:
   name: ghost-sample1
   namespace: marketing
 spec:
-  imageTag: alpine
+  imageTag: latest
+  replicas: 2
+  enableIngress: true
 ---
 apiVersion: marketing.kb.dev/v1
 kind: Ghost
@@ -18,4 +20,6 @@ metadata:
   name: ghost-sample2
   namespace: sales
 spec:
-  imageTag: latest
+  imageTag: alpine
+  replicas: 1
+  enableIngress: false

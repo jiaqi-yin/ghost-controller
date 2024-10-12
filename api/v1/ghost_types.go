@@ -25,6 +25,10 @@ import (
 
 // GhostSpec defines the desired state of Ghost
 type GhostSpec struct {
+	EnableIngress bool `json:"enableIngress"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3
+	Replicas int32 `json:"replicas"`
 	// +kubebuilder:validation:Pattern=`^[-a-z0-9]*$`
 	ImageTag string `json:"imageTag"`
 }
@@ -36,6 +40,9 @@ type GhostStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="EnableIngress",type=boolean,JSONPath=`.spec.enableIngress`
+// +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=`.spec.replicas`
+// +kubebuilder:printcolumn:name="ImageTag",type=string,JSONPath=`.spec.imageTag`
 
 // Ghost is the Schema for the ghosts API
 type Ghost struct {

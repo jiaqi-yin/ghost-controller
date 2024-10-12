@@ -21,9 +21,9 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	netv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
@@ -38,12 +38,13 @@ import (
 const pvcNamePrefix = "ghost-data-pvc-"
 const deploymentNamePrefix = "ghost-deployment-"
 const svcNamePrefix = "ghost-service-"
+const ingressNamePrefix = "ghost-ingress-"
 
 // GhostReconciler reconciles a Ghost object
 type GhostReconciler struct {
 	client.Client
 	Scheme  *runtime.Scheme
-	recoder record.EventRecorder
+	Recoder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=marketing.kb.dev,resources=ghosts,verbs=get;list;watch;create;update;patch;delete
@@ -53,6 +54,8 @@ type GhostReconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -75,8 +78,10 @@ func (r *GhostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	pvcReady := false
 	deploymentReady := false
 	serviceReady := false
+	ingressReady := false
+
 	log.Info("Reconciling Ghost", "imageTag", ghost.Spec.ImageTag, "team", ghost.ObjectMeta.Namespace)
-	// Add or update PVC
+	// Add PVC if not exists
 	if err := r.addPvcIfNotExists(ctx, ghost); err != nil {
 		log.Error(err, "Failed to add PVC for Ghost")
 		addCondition(&ghost.Status, "PVCNotReady", metav1.ConditionFalse, "PVCNotReady", "Failed to add PVC for Ghost")
@@ -100,8 +105,16 @@ func (r *GhostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	} else {
 		serviceReady = true
 	}
+	// Add or update Ingress
+	if err := r.addIngressIfNotExists(ctx, ghost); err != nil {
+		log.Error(err, "Failed to add Ingress for Ghost")
+		addCondition(&ghost.Status, "IngressNotReady", metav1.ConditionFalse, "IngressNotReady", "Failed to add Ingress for Ghost")
+		return ctrl.Result{}, err
+	} else {
+		ingressReady = true
+	}
 	// Check if all subresources are ready
-	if pvcReady && deploymentReady && serviceReady {
+	if pvcReady && deploymentReady && serviceReady && ingressReady {
 		// Add your desired condition when all subresources are ready
 		addCondition(&ghost.Status, "GhostReady", metav1.ConditionTrue, "AllSubresourcesReady", "All subresources are ready")
 	}
@@ -137,7 +150,7 @@ func (r *GhostReconciler) addPvcIfNotExists(ctx context.Context, ghost *marketin
 	if err := r.Create(ctx, desiredPVC); err != nil {
 		return err
 	}
-	r.recoder.Event(ghost, corev1.EventTypeNormal, "PVCReady", "PVC created successfully")
+	r.Recoder.Event(ghost, corev1.EventTypeNormal, "PVCReady", "PVC created successfully")
 	log.Info("PVC created", "pvc", pvcName)
 	return nil
 }
@@ -161,31 +174,27 @@ func generateDesiredPVC(ghost *marketingv1.Ghost, pvcName string) *corev1.Persis
 
 func (r *GhostReconciler) addOrUpdateDeployment(ctx context.Context, ghost *marketingv1.Ghost) error {
 	log := log.FromContext(ctx)
-	deploymentList := &appsv1.DeploymentList{}
-	labelSelector := labels.Set{"app": "ghost-" + ghost.ObjectMeta.Namespace}
 
-	err := r.List(ctx, deploymentList, &client.ListOptions{
-		Namespace:     ghost.ObjectMeta.Namespace,
-		LabelSelector: labelSelector.AsSelector(),
-	})
-	if err != nil {
+	desiredDeployment := generateDesiredDeployment(ghost)
+	existingDeployment := &appsv1.Deployment{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: ghost.ObjectMeta.Namespace, Name: deploymentNamePrefix + ghost.ObjectMeta.Namespace}, existingDeployment)
+	if err != nil && client.IgnoreNotFound(err) != nil {
 		return err
 	}
 
-	if len(deploymentList.Items) > 0 {
-		// Deployment exists, update it
-		existingDeployment := &deploymentList.Items[0] // Assuming only one deployment exists
-		desiredDeployment := generateDesiredDeployment(ghost)
+	if err == nil {
+		log.Info("Deployment already exists", "deployment", deploymentNamePrefix+existingDeployment.ObjectMeta.Namespace)
 
 		// Compare relevant fields to determine if an update is needed
-		if existingDeployment.Spec.Template.Spec.Containers[0].Image != desiredDeployment.Spec.Template.Spec.Containers[0].Image {
+		canUpdateDeployment := *existingDeployment.Spec.Replicas != ghost.Spec.Replicas || existingDeployment.Spec.Template.Spec.Containers[0].Image != "ghost:"+ghost.Spec.ImageTag
+		if canUpdateDeployment {
 			// Fields have changed, update the deployment
 			existingDeployment.Spec = desiredDeployment.Spec
 			if err := r.Update(ctx, existingDeployment); err != nil {
 				return err
 			}
 			log.Info("Deployment updated", "deployment", existingDeployment.Name)
-			r.recoder.Event(ghost, corev1.EventTypeNormal, "DeploymentUpdated", "Deployment updated successfully")
+			r.Recoder.Event(ghost, corev1.EventTypeNormal, "DeploymentUpdated", "Deployment updated successfully")
 		} else {
 			log.Info("Deployment is up to date, no action required", "deployment", existingDeployment.Name)
 		}
@@ -193,30 +202,26 @@ func (r *GhostReconciler) addOrUpdateDeployment(ctx context.Context, ghost *mark
 	}
 
 	// Deployment does not exist, create it
-	desiredDeployment := generateDesiredDeployment(ghost)
 	if err := controllerutil.SetControllerReference(ghost, desiredDeployment, r.Scheme); err != nil {
 		return err
 	}
 	if err := r.Create(ctx, desiredDeployment); err != nil {
 		return err
 	}
-	r.recoder.Event(ghost, corev1.EventTypeNormal, "DeploymentCreated", "Deployment created successfully")
+
+	r.Recoder.Event(ghost, corev1.EventTypeNormal, "DeploymentCreated", "Deployment created successfully")
 	log.Info("Deployment created", "team", ghost.ObjectMeta.Namespace)
 	return nil
 }
 
 func generateDesiredDeployment(ghost *marketingv1.Ghost) *appsv1.Deployment {
-	replicas := int32(1) // Adjust replica count as needed
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: deploymentNamePrefix,
-			Namespace:    ghost.ObjectMeta.Namespace,
-			Labels: map[string]string{
-				"app": "ghost-" + ghost.ObjectMeta.Namespace,
-			},
+			Name:      deploymentNamePrefix + ghost.ObjectMeta.Namespace,
+			Namespace: ghost.ObjectMeta.Namespace,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			Replicas: &ghost.Spec.Replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"app": "ghost-" + ghost.ObjectMeta.Namespace,
@@ -284,7 +289,7 @@ func (r *GhostReconciler) addServiceIfNotExists(ctx context.Context, ghost *mark
 		log.Info("Service already exists", "service", svcNamePrefix+ghost.ObjectMeta.Namespace)
 		return nil
 	}
-	// Service does not exist, create it
+
 	desiredService := generateDesiredService(ghost)
 	if err := controllerutil.SetControllerReference(ghost, desiredService, r.Scheme); err != nil {
 		return err
@@ -294,7 +299,7 @@ func (r *GhostReconciler) addServiceIfNotExists(ctx context.Context, ghost *mark
 	if err := r.Create(ctx, desiredService); err != nil {
 		return err
 	}
-	r.recoder.Event(ghost, corev1.EventTypeNormal, "ServiceCreated", "Service created successfully")
+	r.Recoder.Event(ghost, corev1.EventTypeNormal, "ServiceCreated", "Service created successfully")
 	log.Info("Service created", "service", desiredService.Name)
 	return nil
 }
@@ -302,7 +307,7 @@ func (r *GhostReconciler) addServiceIfNotExists(ctx context.Context, ghost *mark
 func generateDesiredService(ghost *marketingv1.Ghost) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ghost-service-" + ghost.ObjectMeta.Namespace,
+			Name:      svcNamePrefix + ghost.ObjectMeta.Namespace,
 			Namespace: ghost.ObjectMeta.Namespace,
 		},
 		Spec: corev1.ServiceSpec{
@@ -315,6 +320,84 @@ func generateDesiredService(ghost *marketingv1.Ghost) *corev1.Service {
 			},
 			Selector: map[string]string{
 				"app": "ghost-" + ghost.ObjectMeta.Namespace,
+			},
+		},
+	}
+}
+
+func (r *GhostReconciler) addIngressIfNotExists(ctx context.Context, ghost *marketingv1.Ghost) error {
+	log := log.FromContext(ctx)
+	ingress := &netv1.Ingress{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: ghost.ObjectMeta.Namespace, Name: ingressNamePrefix + ghost.ObjectMeta.Namespace}, ingress)
+	if err != nil && client.IgnoreNotFound(err) != nil {
+		return err
+	}
+
+	if err == nil {
+		log.Info("Ingress already exists", "ingress", ingressNamePrefix+ghost.ObjectMeta.Namespace)
+		if !ghost.Spec.EnableIngress {
+			log.Info("Disable ingress", "ingress", ingressNamePrefix+ghost.ObjectMeta.Namespace)
+			if err := r.Delete(ctx, ingress); err != nil {
+				return err
+			}
+		} else {
+			log.Info("Ignoring update", "ingress", ingressNamePrefix+ghost.ObjectMeta.Namespace)
+		}
+		return nil
+	}
+
+	// Ignore ingress creation if disabled
+	if !ghost.Spec.EnableIngress {
+		return nil
+	}
+
+	// Ingress does not exist and enabled, create it
+	desiredIngress := generateDesiredIngress(ghost)
+	if err := controllerutil.SetControllerReference(ghost, desiredIngress, r.Scheme); err != nil {
+		return err
+	}
+
+	if err := r.Create(ctx, desiredIngress); err != nil {
+		return err
+	}
+	r.Recoder.Event(ghost, corev1.EventTypeNormal, "IngressCreated", "Ingress created successfully")
+	log.Info("Ingress created", "ingress", desiredIngress.Name)
+	return nil
+}
+
+func generateDesiredIngress(ghost *marketingv1.Ghost) *netv1.Ingress {
+	ingressClassName := "nginx"
+	pathType := netv1.PathTypePrefix
+
+	return &netv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ingressNamePrefix + ghost.ObjectMeta.Namespace,
+			Namespace: ghost.ObjectMeta.Namespace,
+		},
+		Spec: netv1.IngressSpec{
+			IngressClassName: &ingressClassName,
+			Rules: []netv1.IngressRule{
+				{
+					Host: ghost.ObjectMeta.Name + ".kb.dev",
+					IngressRuleValue: netv1.IngressRuleValue{
+						HTTP: &netv1.HTTPIngressRuleValue{
+							Paths: []netv1.HTTPIngressPath{
+								{
+									Path:     "/",
+									PathType: &pathType,
+									Backend: netv1.IngressBackend{
+										Service: &netv1.IngressServiceBackend{
+											Name: svcNamePrefix + ghost.ObjectMeta.Namespace,
+											Port: netv1.ServiceBackendPort{
+												Number: 80,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
 			},
 		},
 	}
@@ -356,7 +439,7 @@ func (r *GhostReconciler) updateStatus(ctx context.Context, ghost *marketingv1.G
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *GhostReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.recoder = mgr.GetEventRecorderFor("ghost-controller")
+	r.Recoder = mgr.GetEventRecorderFor("ghost-controller")
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&marketingv1.Ghost{}).

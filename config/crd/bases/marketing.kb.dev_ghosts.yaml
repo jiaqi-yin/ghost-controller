@@ -14,7 +14,17 @@ spec:
     singular: ghost
   scope: Namespaced
   versions:
-  - name: v1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.enableIngress
+      name: EnableIngress
+      type: boolean
+    - jsonPath: .spec.replicas
+      name: Replicas
+      type: integer
+    - jsonPath: .spec.imageTag
+      name: ImageTag
+      type: string
+    name: v1
     schema:
       openAPIV3Schema:
         description: Ghost is the Schema for the ghosts API
@@ -39,11 +49,20 @@ spec:
           spec:
             description: GhostSpec defines the desired state of Ghost
             properties:
+              enableIngress:
+                type: boolean
               imageTag:
                 pattern: ^[-a-z0-9]*$
                 type: string
+              replicas:
+                format: int32
+                maximum: 3
+                minimum: 1
+                type: integer
             required:
+            - enableIngress
             - imageTag
+            - replicas
             type: object
           status:
             description: GhostStatus defines the observed state of Ghost

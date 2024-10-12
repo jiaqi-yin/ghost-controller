@@ -145,8 +145,9 @@ func main() {
 	}
 
 	if err = (&controller.GhostReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Recoder: mgr.GetEventRecorderFor("ghost-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Ghost")
 		os.Exit(1)
